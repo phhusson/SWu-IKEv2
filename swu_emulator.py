@@ -1,4 +1,4 @@
-import serial
+#import serial
 import struct
 import socket
 import random
@@ -10,6 +10,7 @@ import fcntl
 import subprocess
 import multiprocessing
 import requests
+import json
 
 from optparse import OptionParser
 from binascii import hexlify, unhexlify
@@ -22,12 +23,12 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from Crypto.Cipher import AES
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from smartcard.System import readers
-from smartcard.util import toHexString,toBytes
-
-from CryptoMobile.Milenage import Milenage
-
-from card.USIM import *
+#from smartcard.System import readers
+#from smartcard.util import toHexString,toBytes
+#
+#from CryptoMobile.Milenage import Milenage
+#
+#from card.USIM import *
 
 requests.packages.urllib3.disable_warnings() 
 
@@ -2147,7 +2148,7 @@ class swu():
                     elif i[1][1] == NAT_DETECTION_DESTINATION_IP:
                         received_nat_detection_destination = i[1][3]
                         print('NAT DESTINATION RECEIVED',toHex(received_nat_detection_destination))
-                        calculated_nat_detection_destination = self.sha1_nat_source(False)
+                        calculated_nat_detection_destination = self.sha1_nat_source(True)
                         print('NAT DESTINATION CALCULATED',toHex(calculated_nat_detection_destination))
                         if received_nat_detection_destination != calculated_nat_detection_destination:
                             self.userplane_mode = NAT_TRAVERSAL
@@ -2155,7 +2156,7 @@ class swu():
                     elif i[1][1] == NAT_DETECTION_SOURCE_IP:
                         received_nat_detection_source = i[1][3]
                         print('NAT SOURCE RECEIVED',toHex(received_nat_detection_source))
-                        calculated_nat_detection_source = self.sha1_nat_destination(False)
+                        calculated_nat_detection_source = self.sha1_nat_destination(True)
                         print('NAT SOURCE CALCULATED',toHex(calculated_nat_detection_source))
                         if received_nat_detection_source != calculated_nat_detection_source:
                             self.userplane_mode = NAT_TRAVERSAL
@@ -3010,19 +3011,48 @@ def milenage_res_ck_ik(ki, op, opc, rand):
 
 
 def return_imsi(serial_interface_or_reader_index):
-    try:
-        return read_imsi_2(serial_interface_or_reader_index)
-    except:
-        try:
-            return get_imsi(serial_interface_or_reader_index)
-        except:
-            try:
-                return https_imsi(serial_interface_or_reader_index)
-            except:
-                print('Unable to access serial port/smartcard reader/server. Using DEFAULT IMSI: ' + DEFAULT_IMSI)
-                return DEFAULT_IMSI
+    print("Grabbing IMSI...")
+    with subprocess.Popen(
+                [
+                'adb',
+                'shell',
+                'su',
+                '1000',
+                '/data/local/tmp/runsimserver.sh',
+                'imsi'],
+            stdout = subprocess.PIPE, stdin = subprocess.DEVNULL) as p:
+        imsi = p.stdout.readline().decode().strip()
+
+    print("...Got imsi = " + imsi)
+    return imsi
+
         
 def return_res_ck_ik(serial_interface_or_reader_index, rand, autn, ki, op, opc):
+    print("Computing res,ck,ik for " + rand + "," + autn)
+    with subprocess.Popen(
+                [
+                'adb',
+                'shell',
+                'su',
+                '1000',
+                '/data/local/tmp/runsimserver.sh',
+                'auth2',
+                rand, autn],
+            stdout = subprocess.PIPE, stdin = subprocess.DEVNULL) as p:
+
+        p.stdout.readline()
+        p.stdout.readline()
+        p.stdout.readline()
+        p.stdout.readline()
+        p.stdout.readline()
+        p.stdout.readline()
+
+        res = p.stdout.readline().decode().strip()
+        print("Got json " + res)
+
+    j = json.loads(res)
+    return j['res'], j['ck'], j['ik']
+
     if ki is not None and (op is not None or opc is not None):
         try:
             return milenage_res_ck_ik(ki, op, opc, rand)
@@ -3265,6 +3295,13 @@ def main():
     sa_list = [
     [
        [IKE,0],
+       [ENCR,ENCR_AES_CBC,[KEY_LENGTH,128]],
+       [PRF,PRF_HMAC_SHA2_256],
+       [INTEG,AUTH_HMAC_SHA2_256_128],
+       [D_H,MODP_2048_bit]  
+    ],
+    [
+       [IKE,0],
        [ENCR,ENCR_NULL],
        [PRF,PRF_HMAC_MD5],
        [INTEG,AUTH_HMAC_MD5_96],
@@ -3292,46 +3329,52 @@ def main():
     sa_list_child = [
     [
         [ESP,4],
-        [ENCR,ENCR_AES_GCM_8,[KEY_LENGTH,256]],
-        [INTEG,NONE],
-        [ESN,ESN_NO_ESN]
-    ],
-    [
-        [ESP,4],
         [ENCR,ENCR_AES_CBC,[KEY_LENGTH,128]],
         [INTEG,AUTH_HMAC_SHA2_256_128],
         [ESN,ESN_NO_ESN]
     ] ,
     [
         [ESP,4],
-        [ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
-        [INTEG,AUTH_HMAC_SHA2_384_192],
-        [ESN,ESN_NO_ESN]
-    ] ,
-    [
-        [ESP,4],
-        [ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
-        [INTEG,AUTH_HMAC_SHA2_512_256],
-        [ESN,ESN_NO_ESN]
-    ]     ,
-    [
-        [ESP,4],
-        [ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
-        [INTEG,AUTH_HMAC_MD5_96],
-        [ESN,ESN_NO_ESN]
-    ]    ,
-    [
-        [ESP,4],
         [ENCR,ENCR_AES_CBC,[KEY_LENGTH,128]],
-        [INTEG,AUTH_HMAC_SHA1_96],
-        [ESN,ESN_NO_ESN]
+        [INTEG,AUTH_HMAC_SHA2_256_128],
+        [ESN,ESN_ESN]
     ] ,
-    [
-        [ESP,4],
-        [ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
-        [INTEG,AUTH_HMAC_SHA1_96],
-        [ESN,ESN_NO_ESN]
-    ]     
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_GCM_8,[KEY_LENGTH,256]],
+    #[INTEG,NONE],
+    #[ESN,ESN_NO_ESN]
+    #],
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
+    #[INTEG,AUTH_HMAC_SHA2_384_192],
+    #[ESN,ESN_NO_ESN]
+    #] ,
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
+    #[INTEG,AUTH_HMAC_SHA2_512_256],
+    #[ESN,ESN_NO_ESN]
+    #]     ,
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
+    #[INTEG,AUTH_HMAC_MD5_96],
+    #[ESN,ESN_NO_ESN]
+    #]    ,
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_CBC,[KEY_LENGTH,128]],
+    #[INTEG,AUTH_HMAC_SHA1_96],
+    #[ESN,ESN_NO_ESN]
+    #] ,
+    #[
+    #[ESP,4],
+    #[ENCR,ENCR_AES_CBC,[KEY_LENGTH,256]],
+    #[INTEG,AUTH_HMAC_SHA1_96],
+    #[ESN,ESN_NO_ESN]
+    #]     
     ]
 
 
